@@ -27,9 +27,7 @@
     label{display:block;font-size:12px;color:var(--muted);margin-bottom:6px}
     input,select{ width:100%;padding:12px 14px;border-radius:12px;border:1px solid var(--border);outline:none;background:var(--bg2);font-size:14px }
     .opt{display:flex;gap:10px;flex-wrap:wrap}
-    .metrics{display:grid;grid-template-columns:repeat(6,1fr);gap:12px}
-    @media (max-width:1080px){ .metrics{grid-template-columns:1fr 1fr} }
-    @media (max-width:520px){ .metrics{grid-template-columns:1fr} }
+    .metrics{display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:12px}
     .metric{border:1px dashed var(--border);border-radius:14px;padding:12px;background:#fff}
     .k{font-size:12px;color:var(--muted)} .v{font-size:22px;font-weight:800}
     .note{font-size:12px;color:var(--muted);margin-top:8px}
@@ -102,21 +100,31 @@
         <div class="metric"><div class="k">净 APY（有效）</div><div class="v" id="m_apy">0.00%</div></div>
         <div class="metric"><div class="k">期末总资产</div><div class="v" id="m_final">$0.00</div></div>
         <div class="metric"><div class="k">总投入（本金+定投）</div><div class="v" id="m_invest">$0.00</div></div>
+        <div class="metric"><div class="k">总定投（不含本金）</div><div class="v" id="m_contrib_total">$0.00</div></div>
         <div class="metric"><div class="k">累计收益（名义）</div><div class="v" id="m_profit">$0.00</div></div>
+        <div class="metric"><div class="k">ROI（总收益率）</div><div class="v" id="m_roi">0.00%</div></div>
+        <div class="metric"><div class="k">收益占比（收益/期末）</div><div class="v" id="m_profit_share">0.00%</div></div>
+        <div class="metric"><div class="k">回本所需时间</div><div class="v" id="m_breakeven">—</div></div>
         <div class="metric"><div class="k">达到目标所需时间</div><div class="v" id="m_target">—</div></div>
       </div>
       <div class="hr"></div>
       <div class="metrics">
         <div class="metric"><div class="k">实际 APY（扣通胀）</div><div class="v" id="m_real_apy">0.00%</div></div>
         <div class="metric"><div class="k">期末实际价值（扣通胀）</div><div class="v" id="m_real_final">$0.00</div></div>
+        <div class="metric"><div class="k">实际 ROI（扣通胀）</div><div class="v" id="m_real_roi">0.00%</div></div>
+        <div class="metric"><div class="k">IRR（现金流年化）</div><div class="v" id="m_irr">—</div></div>
+        <div class="metric"><div class="k">费用拖累（APY 减少）</div><div class="v" id="m_fee_drag">0.00%</div></div>
       </div>
     </div>
   </div>
 
   <script>
+(function(){
+"use strict";
+
     const $ = id => document.getElementById(id);
     const money = v => isFinite(v) ? "$" + Number(v).toLocaleString(undefined,{maximumFractionDigits:2}) : "—";
-    const pct = v => isFinite(v) ? (v*100).toFixed(2) + "%" : "—";
+    const fmtPercent = v => isFinite(v) ? (v*100).toFixed(2) + "%" : "—";
 
     function compToM(comp){ return comp === "cont" ? "cont" : Number(comp||12); }
     function contribFreqDays(freq){ return freq==="daily"?1:freq==="weekly"?7:freq==="monthly"?30:freq==="quarterly"?91:freq==="annually"?365:Infinity; }
@@ -165,6 +173,9 @@
 
       const aprNominal = Math.max(rateFromInput(mode, ratePct, comp) - (feePct/100), -0.99);
       const apyEff = apyFromNominalAPR(aprNominal, comp);
+      const grossAPR = rateFromInput(mode, ratePct, comp);
+      const grossAPY = apyFromNominalAPR(grossAPR, comp);
+      const netAPY = apyEff;
       const realAPY = ((1+apyEff)/(1+inflPct/100))-1;
 
       const fDaily = dailyFactorFromNominalAPR(aprNominal, comp);
@@ -175,26 +186,53 @@
 
       let bal = principal, invested = principal, totalContrib = 0, noInt = principal;
       let inflDeflator = 1, dayForTarget = null;
-      let labels = [], yTotal = [], yNoInt = [], yReal = [];
+      let labels = [], yTotal = [], yNoInt = [], yReal = [], yInvested = [], yProfit = [], yROI = [];
+      let flows = [[0, -principal]];
       const sampleEvery = 30; let nextSample = 0;
 
       for(let day=1; day<=totalDays; day++){
         if(contribFreq!=="none" && contrib>0 && contribTiming==="start" && (day===1 || ((day-1)%contribStep===0))){
+          flows.push([day-1, -contrib]);
           bal += contrib; invested += contrib; totalContrib += contrib; noInt += contrib;
         }
         bal *= fDaily;
         if(contribFreq!=="none" && contrib>0 && contribTiming==="end" && (day%contribStep===0)){
+          flows.push([day, -contrib]);
           bal += contrib; invested += contrib; totalContrib += contrib; noInt += contrib;
         }
         inflDeflator *= fInflDaily;
         if(!dayForTarget && isFinite(target) && target>0 && bal>=target){ dayForTarget = day; }
+        if(typeof dayForBreakeven==="undefined"){ var dayForBreakeven = null; }
+        if(dayForBreakeven===null && bal>=invested){ dayForBreakeven = day; }
         if(day>=nextSample || day===totalDays){
           const m = Math.round(day/30);
-          labels.push(String(m)); yTotal.push(bal); yNoInt.push(noInt); yReal.push(bal/inflDeflator); nextSample += sampleEvery;
+          labels.push(String(m)); yTotal.push(bal); yNoInt.push(noInt); yReal.push(bal/inflDeflator);
+          yInvested.push(invested); const pft = bal - invested; yProfit.push(pft); yROI.push(invested>0 ? (pft/invested) : NaN);
+          nextSample += sampleEvery;
         }
       }
 
       const profit = bal - invested; const realFinal = bal/inflDeflator;
+      flows.push([totalDays, bal]);
+      // XIRR via bisection on annual rate
+      function xnpv(rate){
+        return flows.reduce((acc,[d,amt])=> acc + amt/Math.pow(1+rate, d/365), 0);
+      }
+      function xirr(){
+        if(invested<=0) return NaN;
+        let lo=-0.9999, hi=10, fLo=xnpv(lo), fHi=xnpv(hi);
+        let iter=0;
+        // Expand hi if needed
+        while(fLo*fHi>0 && hi<1e4 && iter<50){ hi*=2; fHi=xnpv(hi); iter++; }
+        if(fLo*fHi>0) return NaN;
+        for(let i=0;i<120;i++){
+          const mid=(lo+hi)/2, fMid=xnpv(mid);
+          if(Math.abs(fMid)<1e-9) return mid;
+          if(fLo*fMid<0){ hi=mid; fHi=fMid; } else { lo=mid; fLo=fMid; }
+        }
+        return (lo+hi)/2;
+      }
+      const irr = xirr();
 
       const c = ensureChart();
       c.data.labels = labels;
@@ -203,17 +241,27 @@
       c.data.datasets[2].data = showReal ? yReal : []; c.data.datasets[2].hidden = !showReal;
       c.update();
 
-      $("m_apr").textContent = pct(aprNominal);
-      $("m_apy").textContent = pct(apyEff);
+      $("m_apr").textContent = fmtPercent(aprNominal);
+      $("m_apy").textContent = fmtPercent(apyEff);
       $("m_final").textContent = money(bal);
       $("m_invest").textContent = money(invested);
       $("m_profit").textContent = money(profit);
-      $("m_real_apy").textContent = pct(realAPY);
+      $("m_contrib_total").textContent = money(totalContrib);
+      const roi = invested>0 ? (profit/invested) : NaN;
+      $("m_roi").textContent = fmtPercent(roi);
+      $("m_profit_share").textContent = isFinite(bal)&&bal>0 ? fmtPercent((profit)/bal) : "—";
+      $("m_breakeven").textContent = (typeof dayForBreakeven!=="undefined" && dayForBreakeven) ? (dayForBreakeven/365).toFixed(2)+" 年" : "—";
+      $("m_real_apy").textContent = fmtPercent(realAPY);
       $("m_real_final").textContent = money(realFinal);
+      $("m_real_roi").textContent = fmtPercent(invested>0 ? (realFinal - invested)/invested : NaN);
+      $("m_fee_drag").textContent = fmtPercent(grossAPY - netAPY);
+      $("m_irr").textContent = isFinite(irr) ? (irr*100).toFixed(2)+"%" : "—";
       $("m_target").textContent = dayForTarget ? (dayForTarget/365).toFixed(2) + " 年" : "—";
 
-      const rows = [["month","total","principal_plus_contrib","real_value"]];
-      for(let i=0;i<labels.length;i++){ rows.push([labels[i], yTotal[i], showNoInt?yNoInt[i]:"", showReal?yReal[i]:""]); }
+      const rows = [["month","total","invested","profit","roi","real_value"]];
+      for(let i=0;i<labels.length;i++){
+        rows.push([labels[i], yTotal[i], yInvested[i], yProfit[i], yROI[i], yReal[i]||""]);
+      }
       $("dlCsv").dataset.csv = rows.map(r=>r.join(",")).join("\n");
     }
 
@@ -228,6 +276,8 @@
     $("dlPng").addEventListener("click", ()=>{ const url = ensureChart().toBase64Image(); const a=document.createElement("a"); a.href=url; a.download="compound-chart.png"; a.click(); });
     $("followBtn").addEventListener("click", ()=>{ window.open("https://x.com/menglayer","_blank"); });
     simulate();
-  </script>
+  
+})();
+</script>
 </body>
 </html>
